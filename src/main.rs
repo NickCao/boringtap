@@ -13,7 +13,8 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
 use tokio::spawn;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tokio::{io::AsyncReadExt, time::interval};
 use x25519_dalek::{PublicKey, StaticSecret};
 
@@ -34,8 +35,9 @@ struct Args {
 }
 
 struct Peer {
-    tunnel: Tunn,
-    endpoint: SocketAddr,
+    tunnel: Arc<Mutex<Tunn>>,
+    endpoint: Arc<RwLock<SocketAddr>>,
+    handle: JoinHandle<()>,
 }
 
 #[tokio::main]
@@ -75,29 +77,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut peer_map = MultiMap::new();
     for (index, peer) in keypairs.iter().enumerate() {
         if index != args.index {
-            let tunnel = Tunn::new(
+            let tunnel = Arc::new(Mutex::new(Tunn::new(
                 keypairs[args.index].0.clone(),
                 peer.1,
                 None,
                 None,
                 index as u32,
                 limiter.clone(),
-            )
-            .unwrap();
+            )?));
+            let endpoint = Arc::new(RwLock::new(SocketAddr::V4(SocketAddrV4::new(
+                Ipv4Addr::new(127, 0, 0, 1),
+                3000 + index as u16,
+            ))));
+            let tunnel1 = tunnel.clone();
+            let sock1 = sock.clone();
+            let endpoint1 = endpoint.clone();
+            let handle = spawn(async move {
+                let mut timer = interval(Duration::from_millis(250));
+                let mut dst = [0u8; BUFFER_SIZE];
+                loop {
+                    timer.tick().await;
+                    match tunnel1.lock().await.update_timers(&mut dst) {
+                        TunnResult::Done => (),
+                        TunnResult::Err(WireGuardError::ConnectionExpired) => (),
+                        TunnResult::Err(err) => {
+                            tracing::error!(message = "error in update timers", error = ?err)
+                        }
+                        TunnResult::WriteToNetwork(packet) => {
+                            sock1
+                                .send_to(packet, *endpoint1.read().await)
+                                .await
+                                .unwrap();
+                        }
+                        _ => unreachable!(),
+                    };
+                }
+            });
             peer_map.insert(
                 peer.1.into(),
                 index as u32,
-                Mutex::new(Peer {
+                Peer {
                     tunnel,
-                    endpoint: SocketAddr::V4(SocketAddrV4::new(
-                        Ipv4Addr::new(127, 0, 0, 1),
-                        3000 + index as u16,
-                    )),
-                }),
+                    endpoint,
+                    handle,
+                },
             );
         }
     }
-    let peer_map: Arc<MultiMap<EUI48, u32, Mutex<Peer>>> = Arc::new(peer_map);
+    let peer_map: Arc<MultiMap<EUI48, u32, Peer>> = Arc::new(peer_map);
 
     let tap_name = format!("boringtap{}", args.index);
     let tap = tokio_tun::TunBuilder::new()
@@ -137,30 +164,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (mut reader, mut writer) = tokio::io::split(tap);
 
-    let sock1 = sock.clone();
-    let peer_map1 = peer_map.clone();
-    let b = spawn(async move {
-        let mut timer = interval(Duration::from_millis(250));
-        let mut dst = [0u8; BUFFER_SIZE];
-        loop {
-            timer.tick().await;
-            for (_, (_, peer)) in peer_map1.iter() {
-                let mut peer = peer.lock().await;
-                match peer.tunnel.update_timers(&mut dst) {
-                    TunnResult::Done => (),
-                    TunnResult::Err(WireGuardError::ConnectionExpired) => (),
-                    TunnResult::Err(err) => {
-                        tracing::error!(message = "error in update timers", error = ?err)
-                    }
-                    TunnResult::WriteToNetwork(packet) => {
-                        sock1.send_to(packet, peer.endpoint).await.unwrap();
-                    }
-                    _ => unreachable!(),
-                };
-            }
-        }
-    });
-
     let sock2 = sock.clone();
     let peer_map2 = peer_map.clone();
     let c = spawn(async move {
@@ -192,14 +195,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     None => continue,
                     Some(peer) => peer,
                 };
-                let mut peer = peer.lock().await;
-                match peer.tunnel.handle_verified_packet(packet, &mut dst) {
+                let mut tunnel = peer.tunnel.lock().await;
+                match tunnel.handle_verified_packet(packet, &mut dst) {
                     TunnResult::Done => (),
                     TunnResult::Err(_) => continue,
                     TunnResult::WriteToNetwork(packet) => {
                         sock2.send_to(packet, addr).await.unwrap();
                         while let TunnResult::WriteToNetwork(packet) =
-                            peer.tunnel.decapsulate(None, &[], &mut dst)
+                            tunnel.decapsulate(None, &[], &mut dst)
                         {
                             sock2.send_to(packet, addr).await.unwrap();
                         }
@@ -208,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writer.write(packet).await.unwrap();
                     }
                 }
-                peer.endpoint = addr;
+                *peer.endpoint.write().await = addr;
             }
         }
     });
@@ -229,14 +232,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [b0, _, _, _, _, _] if (b0 & 0b00000011) == 0b00000010 => {
                             let peer = peer_map.get(&EUI48(header.destination));
                             if let Some(peer) = peer {
-                                let mut peer = peer.lock().await;
-                                match peer.tunnel.encapsulate(&buf[..n], &mut dst) {
+                                match peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst) {
                                     TunnResult::Done => {}
                                     TunnResult::Err(e) => {
                                         tracing::error!(message = "encapsulate error", error = ?e)
                                     }
                                     TunnResult::WriteToNetwork(packet) => {
-                                        sock2.send_to(packet, peer.endpoint).await.unwrap();
+                                        sock2
+                                            .send_to(packet, *peer.endpoint.read().await)
+                                            .await
+                                            .unwrap();
                                     }
                                     _ => unreachable!(),
                                 };
@@ -245,14 +250,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // multicast
                         [b0, _, _, _, _, _] if (b0 & 0b00000001) == 0b00000001 => {
                             for (_, (_, peer)) in peer_map.iter() {
-                                let mut peer = peer.lock().await;
-                                match peer.tunnel.encapsulate(&buf[..n], &mut dst) {
+                                match peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst) {
                                     TunnResult::Done => {}
                                     TunnResult::Err(e) => {
                                         tracing::error!(message = "encapsulate error", error = ?e)
                                     }
                                     TunnResult::WriteToNetwork(packet) => {
-                                        sock2.send_to(packet, peer.endpoint).await.unwrap();
+                                        sock2
+                                            .send_to(packet, *peer.endpoint.read().await)
+                                            .await
+                                            .unwrap();
                                     }
                                     _ => unreachable!(),
                                 };
@@ -267,7 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    tokio::join!(a, b, c, d);
+    tokio::join!(a, c, d);
 
     Ok(())
 }
