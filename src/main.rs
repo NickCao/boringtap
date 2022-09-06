@@ -4,6 +4,7 @@ use boringtap::noise::{rate_limiter::RateLimiter, Tunn};
 use boringtap::noise::{Packet, TunnResult};
 use boringtap::EUI48;
 use etherparse::SlicedPacket;
+use futures::stream::TryStreamExt;
 use multi_map::MultiMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
@@ -32,12 +33,9 @@ struct Args {
 }
 
 struct Peer {
-    index: u32,
     tunnel: Tunn,
     endpoint: SocketAddr,
 }
-
-type PeerMap = Arc<MultiMap<EUI48, u32, Mutex<Peer>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,7 +87,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 PublicKey::from(peer.1).into(),
                 index as u32,
                 Mutex::new(Peer {
-                    index: index as u32,
                     tunnel,
                     endpoint: SocketAddr::V4(SocketAddrV4::new(
                         Ipv4Addr::new(127, 0, 0, 1),
@@ -101,12 +98,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let peer_map = Arc::new(peer_map);
 
+    let tap_name = format!("boringtap{}", args.index);
     let tap = tokio_tun::TunBuilder::new()
-        .name(&format!("boringtap{}", args.index))
+        .name(&tap_name)
         .tap(true)
         .packet_info(false)
         .up()
         .try_build()?;
+
+    let (conn, handle, _) = rtnetlink::new_connection().unwrap();
+    spawn(conn);
+
+    let mut link = handle.link().get().match_name(tap_name).execute();
+    if let Some(link) = link.try_next().await? {
+        let eui: EUI48 = keypairs[args.index].1.into();
+        handle.link().set(link.header.index).address(eui.0.to_vec()).execute().await.unwrap();
+    }
+
     let (mut reader, mut writer) = tokio::io::split(tap);
 
     let sock1 = sock.clone();
