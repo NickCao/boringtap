@@ -173,7 +173,7 @@ impl Tunn {
             rx_bytes: Default::default(),
 
             packet_queue: VecDeque::new(),
-            timers: Timers::new(persistent_keepalive),
+            timers: Timers::new(persistent_keepalive, false),
 
             rate_limiter,
         };
