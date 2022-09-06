@@ -7,7 +7,7 @@ use boringtap::EUI48;
 use etherparse::SlicedPacket;
 use futures::stream::TryStreamExt;
 use multi_map::MultiMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    let peer_map = Arc::new(peer_map);
+    let peer_map: Arc<MultiMap<EUI48, u32, Mutex<Peer>>> = Arc::new(peer_map);
 
     let tap_name = format!("boringtap{}", args.index);
     let tap = tokio_tun::TunBuilder::new()
@@ -110,13 +110,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn(conn);
 
     let mut link = handle.link().get().match_name(tap_name).execute();
-    if let Some(link) = link.try_next().await? {
+    let link = if let Some(link) = link.try_next().await? {
         let eui: EUI48 = keypairs[args.index].1.into();
         handle
             .link()
             .set(link.header.index)
             .address(eui.0.to_vec())
             .up()
+            .execute()
+            .await
+            .unwrap();
+        link.header.index
+    } else {
+        unreachable!()
+    };
+
+    for (addr, (_, _)) in peer_map.iter() {
+        handle
+            .neighbours()
+            .add(link, addr.into())
+            .link_local_address(&addr.0)
             .execute()
             .await
             .unwrap();
@@ -248,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 };
                             }
                         }
-                        a => eprintln!("destination address out of supported range: {:x?}", a),
+                        _ => {}
                     }
                 } else {
                     eprintln!("invalid ethernet packet");
