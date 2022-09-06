@@ -107,6 +107,7 @@ dependencies = [
  "ip_network",
  "ip_network_table",
  "libc",
+ "multi-map",
  "parking_lot",
  "rand_core 0.6.3",
  "ring",
@@ -119,6 +120,7 @@ dependencies = [
  "tracing-subscriber",
  "untrusted 0.9.0",
  "x25519-dalek",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -454,6 +456,12 @@ dependencies = [
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys",
 ]
+
+[[package]]
+name = "multi-map"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bba551d6d795f74a01767577ea8339560bf0a65354e0417b7e915ed608443d46"
 
 [[package]]
 name = "nix"
@@ -1049,6 +1057,12 @@ dependencies = [
  "rand_core 0.6.3",
  "zeroize",
 ]
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "074914ea4eec286eb8d1fd745768504f420a1f7b7919185682a4a267bed7d2e7"
 
 [[package]]
 name = "zeroize"
