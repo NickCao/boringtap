@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if index != args.index {
             let tunnel = Tunn::new(
                 keypairs[args.index].0.clone(),
-                PublicKey::from(peer.1),
+                peer.1,
                 None,
                 None,
                 index as u32,
@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .unwrap();
             peer_map.insert(
-                PublicKey::from(peer.1).into(),
+                peer.1.into(),
                 index as u32,
                 Mutex::new(Peer {
                     tunnel,
@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("parsed packet");
                 let peer = match &packet {
                     Packet::HandshakeInit(p) => {
-                        parse_handshake_anon(&keypairs[args.index].0, &keypairs[args.index].1, &p)
+                        parse_handshake_anon(&keypairs[args.index].0, &keypairs[args.index].1, p)
                             .ok()
                             .and_then(|h| peer_map2.get(&h.peer_static_public[..].into()))
                     }

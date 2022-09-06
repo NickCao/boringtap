@@ -421,7 +421,7 @@ impl Tunn {
         self.timer_tick(TimerName::TimeLastDataPacketReceived);
         self.rx_bytes += packet.len();
         match packet.len() {
-            0 => return TunnResult::Done, // This is keepalive, and not an error
+            0 => TunnResult::Done, // This is keepalive, and not an error
             _ => TunnResult::WriteToTunnel(packet),
         }
     }
