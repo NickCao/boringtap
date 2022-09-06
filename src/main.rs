@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use boringtap::noise::errors::WireGuardError;
 use boringtap::noise::handshake::parse_handshake_anon;
 use boringtap::noise::{rate_limiter::RateLimiter, Tunn};
 use boringtap::noise::{Packet, TunnResult};
@@ -112,7 +113,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut link = handle.link().get().match_name(tap_name).execute();
     if let Some(link) = link.try_next().await? {
         let eui: EUI48 = keypairs[args.index].1.into();
-        handle.link().set(link.header.index).address(eui.0.to_vec()).execute().await.unwrap();
+        handle
+            .link()
+            .set(link.header.index)
+            .address(eui.0.to_vec())
+            .execute()
+            .await
+            .unwrap();
     }
 
     let (mut reader, mut writer) = tokio::io::split(tap);
@@ -128,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut peer = peer.lock().await;
                 match peer.tunnel.update_timers(&mut dst) {
                     TunnResult::Done => {}
+                    TunnResult::Err(WireGuardError::ConnectionExpired) => {}
                     TunnResult::Err(e) => eprintln!("{:?}", e),
                     TunnResult::WriteToNetwork(packet) => {
                         sock1.send_to(packet, peer.endpoint).await.unwrap();
