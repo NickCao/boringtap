@@ -104,7 +104,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .name(&tap_name)
         .tap(true)
         .packet_info(false)
-        .up()
         .try_build()?;
 
     let (conn, handle, _) = rtnetlink::new_connection().unwrap();
@@ -117,6 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .link()
             .set(link.header.index)
             .address(eui.0.to_vec())
+            .up()
             .execute()
             .await
             .unwrap();
