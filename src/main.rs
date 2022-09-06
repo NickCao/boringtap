@@ -7,7 +7,7 @@ use boringtap::EUI48;
 use etherparse::SlicedPacket;
 use futures::stream::TryStreamExt;
 use multi_map::MultiMap;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -147,9 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (_, (_, peer)) in peer_map1.iter() {
                 let mut peer = peer.lock().await;
                 match peer.tunnel.update_timers(&mut dst) {
-                    TunnResult::Done => {}
-                    TunnResult::Err(WireGuardError::ConnectionExpired) => {}
-                    TunnResult::Err(e) => eprintln!("{:?}", e),
+                    TunnResult::Done => (),
+                    TunnResult::Err(WireGuardError::ConnectionExpired) => (),
+                    TunnResult::Err(err) => {
+                        tracing::error!(message = "error in update timers", error = ?err)
+                    }
                     TunnResult::WriteToNetwork(packet) => {
                         sock1.send_to(packet, peer.endpoint).await.unwrap();
                     }
@@ -166,18 +168,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut dst = [0u8; BUFFER_SIZE];
         loop {
             if let Ok((n, addr)) = sock2.recv_from(&mut src).await {
-                eprintln!("received packet from {}", addr);
                 let packet = match limiter.verify_packet(Some(addr.ip()), &src[..n], &mut dst) {
                     Ok(packet) => packet,
                     Err(TunnResult::WriteToNetwork(cookie)) => {
                         sock2.send_to(cookie, addr).await.unwrap();
-                        eprintln!("doint handshake");
                         continue;
                     }
                     _ => continue,
                 };
 
-                eprintln!("parsed packet");
                 let peer = match &packet {
                     Packet::HandshakeInit(p) => {
                         parse_handshake_anon(&keypairs[args.index].0, &keypairs[args.index].1, p)
@@ -193,14 +192,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     None => continue,
                     Some(peer) => peer,
                 };
-                eprintln!("found peer");
                 let mut peer = peer.lock().await;
                 match peer.tunnel.handle_verified_packet(packet, &mut dst) {
                     TunnResult::Done => (),
-                    TunnResult::Err(e) => {
-                        eprintln!("{:?}", e);
-                        continue;
-                    }
+                    TunnResult::Err(_) => continue,
                     TunnResult::WriteToNetwork(packet) => {
                         sock2.send_to(packet, addr).await.unwrap();
                         while let TunnResult::WriteToNetwork(packet) =
@@ -210,7 +205,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     TunnResult::WriteToTunnel(packet) => {
-                        eprintln!("written packet to tunnel");
                         writer.write(packet).await.unwrap();
                     }
                 }
@@ -238,7 +232,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let mut peer = peer.lock().await;
                                 match peer.tunnel.encapsulate(&buf[..n], &mut dst) {
                                     TunnResult::Done => {}
-                                    TunnResult::Err(e) => eprintln!("{:?}", e),
+                                    TunnResult::Err(e) => {
+                                        tracing::error!(message = "encapsulate error", error = ?e)
+                                    }
                                     TunnResult::WriteToNetwork(packet) => {
                                         sock2.send_to(packet, peer.endpoint).await.unwrap();
                                     }
@@ -248,12 +244,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         // multicast
                         [b0, _, _, _, _, _] if (b0 & 0b00000001) == 0b00000001 => {
-                            eprintln!("broadcasting");
                             for (_, (_, peer)) in peer_map.iter() {
                                 let mut peer = peer.lock().await;
                                 match peer.tunnel.encapsulate(&buf[..n], &mut dst) {
                                     TunnResult::Done => {}
-                                    TunnResult::Err(e) => eprintln!("{:?}", e),
+                                    TunnResult::Err(e) => {
+                                        tracing::error!(message = "encapsulate error", error = ?e)
+                                    }
                                     TunnResult::WriteToNetwork(packet) => {
                                         sock2.send_to(packet, peer.endpoint).await.unwrap();
                                     }
@@ -264,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         _ => {}
                     }
                 } else {
-                    eprintln!("invalid ethernet packet");
+                    tracing::error!("ethernet packet error");
                 }
             }
         }
