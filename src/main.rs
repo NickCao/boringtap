@@ -9,6 +9,7 @@ use futures::stream::TryStreamExt;
 use multi_map::MultiMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
+use std::thread::available_parallelism;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UdpSocket;
@@ -65,14 +66,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         HANDSHAKE_RATE_LIMIT,
     ));
 
+    let mut tasks = vec![];
     let limiter_reset = limiter.clone();
-    let a = spawn(async move {
+    tasks.push(spawn(async move {
         let mut timer = interval(Duration::from_secs(1));
         loop {
             timer.tick().await;
             limiter_reset.reset_count();
         }
-    });
+    }));
 
     let mut peer_map = MultiMap::new();
     for (index, peer) in keypairs.iter().enumerate() {
@@ -126,12 +128,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let peer_map: Arc<MultiMap<EUI48, u32, Peer>> = Arc::new(peer_map);
 
+    let queues = available_parallelism().unwrap().get();
     let tap_name = format!("boringtap{}", args.index);
     let tap = tokio_tun::TunBuilder::new()
         .name(&tap_name)
         .tap(true)
         .packet_info(false)
-        .try_build()?;
+        .try_build_mq(queues)?;
 
     let (conn, handle, _) = rtnetlink::new_connection().unwrap();
     spawn(conn);
@@ -162,63 +165,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
     }
 
-    let (mut reader, mut writer) = tokio::io::split(tap);
+    for tap in tap.into_iter() {
+        let (mut reader, mut writer) = tokio::io::split(tap);
+        let kp = keypairs[args.index].clone();
+        let sock1 = sock.clone();
+        let peer_map1 = peer_map.clone();
+        let limiter1 = limiter.clone();
+        tasks.push(spawn(async move {
+            let mut src = [0u8; BUFFER_SIZE];
+            let mut dst = [0u8; BUFFER_SIZE];
+            loop {
+                if let Ok((n, addr)) = sock1.recv_from(&mut src).await {
+                    let packet = match limiter1.verify_packet(Some(addr.ip()), &src[..n], &mut dst)
+                    {
+                        Ok(packet) => packet,
+                        Err(TunnResult::WriteToNetwork(cookie)) => {
+                            sock1.send_to(cookie, addr).await.unwrap();
+                            continue;
+                        }
+                        _ => continue,
+                    };
 
-    let sock2 = sock.clone();
-    let peer_map2 = peer_map.clone();
-    let c = spawn(async move {
-        let mut src = [0u8; BUFFER_SIZE];
-        let mut dst = [0u8; BUFFER_SIZE];
-        loop {
-            if let Ok((n, addr)) = sock2.recv_from(&mut src).await {
-                let packet = match limiter.verify_packet(Some(addr.ip()), &src[..n], &mut dst) {
-                    Ok(packet) => packet,
-                    Err(TunnResult::WriteToNetwork(cookie)) => {
-                        sock2.send_to(cookie, addr).await.unwrap();
-                        continue;
-                    }
-                    _ => continue,
-                };
-
-                let peer = match &packet {
-                    Packet::HandshakeInit(p) => {
-                        parse_handshake_anon(&keypairs[args.index].0, &keypairs[args.index].1, p)
+                    let peer = match &packet {
+                        Packet::HandshakeInit(p) => parse_handshake_anon(&kp.0, &kp.1, p)
                             .ok()
-                            .and_then(|h| peer_map2.get(&h.peer_static_public[..].into()))
-                    }
-                    Packet::HandshakeResponse(p) => peer_map2.get_alt(&(p.receiver_idx >> 8)),
-                    Packet::PacketCookieReply(p) => peer_map2.get_alt(&(p.receiver_idx >> 8)),
-                    Packet::PacketData(p) => peer_map2.get_alt(&(p.receiver_idx >> 8)),
-                };
+                            .and_then(|h| peer_map1.get(&h.peer_static_public[..].into())),
+                        Packet::HandshakeResponse(p) => peer_map1.get_alt(&(p.receiver_idx >> 8)),
+                        Packet::PacketCookieReply(p) => peer_map1.get_alt(&(p.receiver_idx >> 8)),
+                        Packet::PacketData(p) => peer_map1.get_alt(&(p.receiver_idx >> 8)),
+                    };
 
-                let peer = match peer {
-                    None => continue,
-                    Some(peer) => peer,
-                };
-                let mut tunnel = peer.tunnel.lock().await;
-                match tunnel.handle_verified_packet(packet, &mut dst) {
-                    TunnResult::Done => (),
-                    TunnResult::Err(_) => continue,
-                    TunnResult::WriteToNetwork(packet) => {
-                        sock2.send_to(packet, addr).await.unwrap();
-                        while let TunnResult::WriteToNetwork(packet) =
-                            tunnel.decapsulate(None, &[], &mut dst)
-                        {
-                            sock2.send_to(packet, addr).await.unwrap();
+                    let peer = match peer {
+                        None => continue,
+                        Some(peer) => peer,
+                    };
+                    let mut tunnel = peer.tunnel.lock().await;
+                    match tunnel.handle_verified_packet(packet, &mut dst) {
+                        TunnResult::Done => (),
+                        TunnResult::Err(_) => continue,
+                        TunnResult::WriteToNetwork(packet) => {
+                            sock1.send_to(packet, addr).await.unwrap();
+                            while let TunnResult::WriteToNetwork(packet) =
+                                tunnel.decapsulate(None, &[], &mut dst)
+                            {
+                                sock1.send_to(packet, addr).await.unwrap();
+                            }
+                        }
+                        TunnResult::WriteToTunnel(packet) => {
+                            writer.write(packet).await.unwrap();
                         }
                     }
-                    TunnResult::WriteToTunnel(packet) => {
-                        writer.write(packet).await.unwrap();
-                    }
+                    *peer.endpoint.write().await = addr;
                 }
-                *peer.endpoint.write().await = addr;
             }
-        }
-    });
+        }));
 
-    let sock2 = sock.clone();
-    let d = spawn(async move {
-        loop {
+        let sock2 = sock.clone();
+        let peer_map2 = peer_map.clone();
+        tasks.push(spawn(async move {
             let mut buf = [0u8; BUFFER_SIZE];
             let mut dst = [0u8; BUFFER_SIZE];
             loop {
@@ -230,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match header.destination {
                         // locally administered unicast
                         [b0, _, _, _, _, _] if (b0 & 0b00000011) == 0b00000010 => {
-                            let peer = peer_map.get(&EUI48(header.destination));
+                            let peer = peer_map2.get(&EUI48(header.destination));
                             if let Some(peer) = peer {
                                 match peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst) {
                                     TunnResult::Done => {}
@@ -249,7 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         // multicast
                         [b0, _, _, _, _, _] if (b0 & 0b00000001) == 0b00000001 => {
-                            for (_, (_, peer)) in peer_map.iter() {
+                            for (_, (_, peer)) in peer_map2.iter() {
                                 match peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst) {
                                     TunnResult::Done => {}
                                     TunnResult::Err(e) => {
@@ -271,10 +275,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::error!("ethernet packet error");
                 }
             }
-        }
-    });
+        }));
+    }
 
-    tokio::join!(a, c, d);
+    for t in tasks {
+        t.await.unwrap();
+    }
 
     Ok(())
 }
