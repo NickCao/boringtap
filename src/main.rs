@@ -99,7 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut dst = [0u8; BUFFER_SIZE];
                 loop {
                     timer.tick().await;
-                    match tunnel1.lock().await.update_timers(&mut dst) {
+                    let res = tunnel1.lock().await.update_timers(&mut dst);
+                    match res {
                         TunnResult::Done => (),
                         TunnResult::Err(WireGuardError::ConnectionExpired) => (),
                         TunnResult::Err(err) => {
@@ -129,6 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_map: Arc<MultiMap<EUI48, u32, Peer>> = Arc::new(peer_map);
 
     let queues = available_parallelism().unwrap().get();
+    println!("{} queues", queues);
     let tap_name = format!("boringtap{}", args.index);
     let tap = tokio_tun::TunBuilder::new()
         .name(&tap_name)
@@ -200,13 +202,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(peer) => peer,
                     };
                     let mut tunnel = peer.tunnel.lock().await;
-                    match tunnel.handle_verified_packet(packet, &mut dst) {
+                    let res = tunnel.handle_verified_packet(packet, &mut dst);
+                    drop(tunnel);
+                    match res {
                         TunnResult::Done => (),
                         TunnResult::Err(_) => continue,
                         TunnResult::WriteToNetwork(packet) => {
                             sock1.send_to(packet, addr).await.unwrap();
                             while let TunnResult::WriteToNetwork(packet) =
-                                tunnel.decapsulate(None, &[], &mut dst)
+                                peer.tunnel.lock().await.decapsulate(None, &[], &mut dst)
                             {
                                 sock1.send_to(packet, addr).await.unwrap();
                             }
@@ -236,7 +240,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         [b0, _, _, _, _, _] if (b0 & 0b00000011) == 0b00000010 => {
                             let peer = peer_map2.get(&EUI48(header.destination));
                             if let Some(peer) = peer {
-                                match peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst) {
+                                let res = peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst);
+                                match res {
                                     TunnResult::Done => {}
                                     TunnResult::Err(e) => {
                                         tracing::error!(message = "encapsulate error", error = ?e)
@@ -254,7 +259,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // multicast
                         [b0, _, _, _, _, _] if (b0 & 0b00000001) == 0b00000001 => {
                             for (_, (_, peer)) in peer_map2.iter() {
-                                match peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst) {
+                                let res = peer.tunnel.lock().await.encapsulate(&buf[..n], &mut dst);
+                                match res {
                                     TunnResult::Done => {}
                                     TunnResult::Err(e) => {
                                         tracing::error!(message = "encapsulate error", error = ?e)
