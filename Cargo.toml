@@ -29,6 +29,7 @@ netlink-packet-generic = "*"
 netlink-packet-core = "*"
 futures = "0.3.24"
 glommio = "0.7.0"
+io-uring = "0.5"
 
 [profile.release]
 debug = true

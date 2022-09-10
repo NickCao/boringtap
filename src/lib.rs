@@ -86,7 +86,7 @@ struct ifreq {
 }
 
 pub fn open_tap(name: &str) -> std::io::Result<RawFd> {
-    let fd = match unsafe { open(b"/dev/net/tun\0".as_ptr() as _, O_RDWR) } {
+    let fd = match unsafe { open(b"/dev/net/tun\0".as_ptr() as _, O_RDWR | O_NONBLOCK) } {
         -1 => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
