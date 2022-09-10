@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "liburing/io_uring.h"
 #include <assert.h>
 #include <errno.h>
@@ -19,7 +20,7 @@ const size_t BUF_SIZE = 65535;
 int tun_alloc(char *dev) {
   struct ifreq ifr;
   int fd, err;
-  if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
+  if ((fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK)) < 0)
     return fd;
   memset(&ifr, 0, sizeof(ifr));
   ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_MULTI_QUEUE;
@@ -121,8 +122,10 @@ int main() {
   int files[2];
   files[0] = tun_alloc("ping");
   files[1] = tun_alloc("pong");
+  assert(files[0] >= 0);
+  assert(files[1] >= 0);
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 1; i++) {
     pthread_t thread;
     pthread_create(&thread, NULL, run, files);
   }
