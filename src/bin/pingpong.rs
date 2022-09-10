@@ -1,6 +1,10 @@
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll, Token};
+use std::fs::File;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
-use std::os::unix::prelude::AsRawFd;
+use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
+use std::time::Duration;
 
 use argh::FromArgs;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
@@ -35,6 +39,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for _ in 0..1 {
         std::thread::spawn(move || {
+            let eventfd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+
+            let mut poll = Poll::new().unwrap();
+            poll.registry()
+                .register(&mut SourceFd(&eventfd), Token(0), Interest::READABLE)
+                .unwrap();
+            let mut events = Events::with_capacity(1024);
+
             let iov = unsafe {
                 [
                     iovec {
@@ -53,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             submitter.register_files(&fds).unwrap();
             submitter.register_buffers(&iov).unwrap();
+            submitter.register_eventfd(eventfd).unwrap();
 
             unsafe {
                 ring.submission()
@@ -82,6 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ring.submit().unwrap();
 
                 loop {
+                    drop(poll.poll(&mut events, None));
                     for cqe in ring.completion_shared().into_iter() {
                         let data = cqe.user_data();
                         if data != u64::MAX {
