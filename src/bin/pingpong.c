@@ -1,3 +1,4 @@
+#include "liburing/io_uring.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -35,22 +36,12 @@ struct user_data {
   size_t index;
 };
 
-static void queue_write(struct io_uring *ring, int fd, struct user_data *data,
-                        struct iovec *iov, size_t n) {
-  struct io_uring_sqe *sqe;
-  sqe = io_uring_get_sqe(ring);
-  io_uring_prep_write_fixed(sqe, fd, iov[data->index].iov_base, n, 0,
-                            data->index);
-  data->read = false;
-  io_uring_sqe_set_data(sqe, data);
-  io_uring_submit(ring);
-}
-
 static void queue_read(struct io_uring *ring, int fd, struct user_data *data,
                        struct iovec *iov, size_t i) {
   struct io_uring_sqe *sqe;
   sqe = io_uring_get_sqe(ring);
   io_uring_prep_read_fixed(sqe, fd, iov[i].iov_base, iov[i].iov_len, 0, i);
+  sqe->flags |= IOSQE_FIXED_FILE;
   data->read = true;
   data->index = i;
   io_uring_sqe_set_data(sqe, data);
@@ -59,39 +50,66 @@ static void queue_read(struct io_uring *ring, int fd, struct user_data *data,
 
 int main() {
   struct io_uring ring;
-  assert(!io_uring_queue_init(128, &ring, 0));
+  struct io_uring_params params;
+
+  memset(&params, 0, sizeof(params));
+  params.flags |= IORING_SETUP_SQPOLL;
+  params.sq_thread_idle = 2000;
+
+  assert(!io_uring_queue_init_params(128, &ring, &params));
 
   struct iovec iov[2];
   for (int i = 0; i < 2; i++) {
     iov[i].iov_base = malloc(BUF_SIZE);
     iov[i].iov_len = BUF_SIZE;
   }
-  io_uring_register_buffers(&ring, iov, 2);
+  assert(!io_uring_register_buffers(&ring, iov, 2));
 
-  int ping = tun_alloc("ping");
-  assert(ping >= 0);
-  int pong = tun_alloc("pong");
-  assert(pong >= 0);
+  int files[2];
+  files[0] = tun_alloc("ping");
+  files[1] = tun_alloc("pong");
+  assert(!io_uring_register_files(&ring, files, 2));
 
-  int fds[2];
-  fds[0] = ping;
-  fds[1] = pong;
+  struct user_data datas_write[2];
+  struct user_data datas_read[2];
 
-  queue_read(&ring, fds[0], malloc(sizeof(struct user_data)), iov, 0);
-  queue_read(&ring, fds[1], malloc(sizeof(struct user_data)), iov, 1);
+  queue_read(&ring, 0, &datas_read[0], iov, 0);
+  queue_read(&ring, 1, &datas_read[1], iov, 1);
 
+  struct io_uring_sqe *sqe;
   struct io_uring_cqe *cqe;
+
   while (1) {
-    while (!io_uring_peek_cqe(&ring, &cqe)) {
+    while (!io_uring_wait_cqe(&ring, &cqe)) {
       struct user_data *data = io_uring_cqe_get_data(cqe);
-      size_t i = data->index;
       if (data->read) {
+        int read_from = data->index;
+        int write_to = 1 - data->index;
+
         if (cqe->res > 0) {
-          queue_write(&ring, fds[1 - i], data, iov, cqe->res);
+          // enqueue write
+          struct user_data *data_write = &datas_write[write_to];
+          data_write->read = false;
+          sqe = io_uring_get_sqe(&ring);
+          io_uring_prep_write_fixed(sqe, write_to, iov[read_from].iov_base,
+                                    cqe->res, 0, read_from);
+          sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK;
+          io_uring_sqe_set_data(sqe, data_write);
         }
-        queue_read(&ring, fds[i], malloc(sizeof(struct user_data)), iov, i);
+
+        // enqueue read
+        struct user_data *data_read = &datas_read[read_from];
+        data_read->read = true;
+        data_read->index = read_from;
+        sqe = io_uring_get_sqe(&ring);
+        io_uring_prep_read_fixed(sqe, read_from, iov[read_from].iov_base,
+                                 iov[read_from].iov_len, 0, read_from);
+        sqe->flags |= IOSQE_FIXED_FILE;
+        io_uring_sqe_set_data(sqe, data_read);
+
+        io_uring_submit(&ring);
       } else {
-        free(data);
+        // do nothing
       }
       io_uring_cqe_seen(&ring, cqe);
     }
