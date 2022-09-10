@@ -92,7 +92,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ring.submit().unwrap();
                         } else {
                         }
-                        ring.completion_shared().sync();
                     }
                 }
             }
