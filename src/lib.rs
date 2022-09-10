@@ -1,7 +1,11 @@
-use libc::*;
+use libc::{
+    c_int, c_short, c_uchar, ioctl, itimerspec, open, sockaddr, sockaddr_in, timerfd_create,
+    timerfd_settime, timespec, IFF_MULTI_QUEUE, IFF_NO_PI, IFF_TAP, IFNAMSIZ, O_NONBLOCK, O_RDWR,
+};
 use std::{
     net::{IpAddr, Ipv6Addr},
     os::unix::prelude::RawFd,
+    time::Duration,
 };
 use x25519_dalek::PublicKey;
 
@@ -120,17 +124,34 @@ pub fn open_tap(name: &str) -> std::io::Result<RawFd> {
         ));
     }
 
-    match unsafe { fcntl(fd, F_GETFL) } {
-        -1 => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "get flags failed",
-        )),
-        flags => match unsafe { fcntl(fd, F_SETFL, flags | O_NONBLOCK) } {
-            -1 => Err(std::io::Error::new(
+    Ok(fd)
+}
+
+pub fn timerfd(interval: Duration) -> std::io::Result<RawFd> {
+    unsafe {
+        let fd = timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK);
+        if fd < 0 {
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "set non block failed",
-            )),
-            _ => Ok(fd),
-        },
+                "timerfd_create failed",
+            ));
+        }
+        let new_value = itimerspec {
+            it_value: timespec {
+                tv_sec: 0,
+                tv_nsec: 1,
+            },
+            it_interval: timespec {
+                tv_sec: interval.as_secs() as i64,
+                tv_nsec: interval.subsec_nanos() as i64,
+            },
+        };
+        if timerfd_settime(fd, 0, &new_value as _, std::ptr::null_mut()) < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "timerfd_settime failed",
+            ));
+        }
+        Ok(fd)
     }
 }
