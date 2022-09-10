@@ -125,7 +125,7 @@ int main() {
   assert(files[0] >= 0);
   assert(files[1] >= 0);
 
-  for (int i = 0; i < 1; i++) {
+  for (int i = 0; i < 5; i++) {
     pthread_t thread;
     pthread_create(&thread, NULL, run, files);
   }
