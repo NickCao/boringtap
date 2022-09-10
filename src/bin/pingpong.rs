@@ -1,14 +1,39 @@
+use std::net::SocketAddr;
+use std::net::UdpSocket;
+use std::os::unix::prelude::AsRawFd;
+
+use argh::FromArgs;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{iovec, malloc};
 
 const BUF_SIZE: usize = 65535;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let ping = boringtap::open_tap("ping").unwrap();
-    let pong = boringtap::open_tap("pong").unwrap();
-    let fds = [ping, pong];
+#[derive(FromArgs)]
+/// pingpong
+struct Args {
+    /// tap name
+    #[argh(option, short = 'n')]
+    name: String,
+    /// bind address
+    #[argh(option, short = 'b')]
+    bind: SocketAddr,
+    /// peer address
+    #[argh(option, short = 'p')]
+    peer: SocketAddr,
+}
 
-    for _ in 0..4 {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Args = argh::from_env();
+
+    let tap = boringtap::open_tap(&args.name).unwrap();
+
+    let sock = UdpSocket::bind(args.bind).unwrap();
+    sock.connect(args.peer).unwrap();
+    sock.set_nonblocking(true).unwrap();
+
+    let fds = [tap.as_raw_fd(), sock.as_raw_fd()];
+
+    for _ in 0..1 {
         std::thread::spawn(move || {
             let iov = unsafe {
                 [
