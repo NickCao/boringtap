@@ -3,14 +3,6 @@ use libc::{iovec, malloc};
 
 const BUF_SIZE: usize = 65535;
 
-fn pack(read: bool, index: u32) -> u64 {
-    ((read as u64) << 32) + index as u64
-}
-
-fn unpack(packed: u64) -> (bool, u32) {
-    ((packed >> 32) != 0, packed as u32)
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ping = boringtap::open_tap("ping").unwrap();
     let pong = boringtap::open_tap("pong").unwrap();
@@ -47,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             0,
                         )
                         .build()
-                        .user_data(pack(true, 0)),
+                        .user_data(0),
                     )
                     .unwrap();
                 ring.submission()
@@ -59,16 +51,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             1,
                         )
                         .build()
-                        .user_data(pack(true, 1)),
+                        .user_data(1),
                     )
                     .unwrap();
                 ring.submit().unwrap();
 
                 loop {
                     for cqe in ring.completion_shared().into_iter() {
-                        let (read, index) = unpack(cqe.user_data());
-                        if read {
-                            let read_from = index as usize;
+                        let data = cqe.user_data();
+                        if data != u64::MAX {
+                            let read_from = data as usize;
                             let write_to = 1 - read_from;
                             if cqe.result() > 0 {
                                 ring.submission_shared()
@@ -81,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         )
                                         .build()
                                         .flags(Flags::IO_LINK)
-                                        .user_data(pack(false, write_to as u32)),
+                                        .user_data(u64::MAX),
                                     )
                                     .unwrap();
                             }
@@ -94,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         read_from as u16,
                                     )
                                     .build()
-                                    .user_data(pack(true, read_from as u32)),
+                                    .user_data(read_from as u64),
                                 )
                                 .unwrap();
                             ring.submit().unwrap();
