@@ -5,6 +5,7 @@
 #include <liburing.h>
 #include <linux/if.h>
 #include <linux/if_tun.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +49,7 @@ static void queue_read(struct io_uring *ring, int fd, struct user_data *data,
   io_uring_submit(ring);
 }
 
-int main() {
+void *run(void *files) {
   struct io_uring ring;
   struct io_uring_params params;
 
@@ -65,9 +66,6 @@ int main() {
   }
   assert(!io_uring_register_buffers(&ring, iov, 2));
 
-  int files[2];
-  files[0] = tun_alloc("ping");
-  files[1] = tun_alloc("pong");
   assert(!io_uring_register_files(&ring, files, 2));
 
   struct user_data datas_write[2];
@@ -116,5 +114,21 @@ int main() {
   }
 
   io_uring_queue_exit(&ring);
+}
+
+int main() {
+
+  int files[2];
+  files[0] = tun_alloc("ping");
+  files[1] = tun_alloc("pong");
+
+  for (int i = 0; i < 4; i++) {
+    pthread_t thread;
+    pthread_create(&thread, NULL, run, files);
+  }
+
+  while (1) {
+  }
+
   return 0;
 }
