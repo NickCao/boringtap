@@ -127,47 +127,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .add((buf.unwrap() as usize * BUF_SIZE) + PKT_SIZE),
                                 PKT_SIZE,
                             );
-                            match data {
-                                0 => match tunnel.encapsulate(&src, dst) {
-                                    TunnResult::Done => {}
-                                    TunnResult::Err(e) => {
-                                        tracing::error!(message = "encapsulate error", error = ?e)
-                                    }
-                                    TunnResult::WriteToNetwork(packet) => {
-                                        sq.push_multiple(&prep_write(
-                                            1,
-                                            buffers,
-                                            buf.unwrap(),
-                                            packet.len() as u32,
-                                        ))
-                                        .unwrap();
-                                    }
-                                    _ => unreachable!(),
-                                },
-                                1 => match tunnel.decapsulate(None, &src, dst) {
-                                    TunnResult::Done => (),
-                                    TunnResult::Err(_) => (),
-                                    TunnResult::WriteToNetwork(packet) => {
-                                        sq.push_multiple(&prep_write(
-                                            1,
-                                            buffers,
-                                            buf.unwrap(),
-                                            packet.len() as u32,
-                                        ))
-                                        .unwrap();
-                                        // FIXME: should flush, but would complicate buffer mgmt
-                                    }
-                                    TunnResult::WriteToTunnel(packet) => {
-                                        sq.push_multiple(&prep_write(
-                                            0,
-                                            buffers,
-                                            buf.unwrap(),
-                                            packet.len() as u32,
-                                        ))
-                                        .unwrap();
-                                    }
-                                },
+                            match match data {
+                                0 => tunnel.encapsulate(&src, dst),
+                                1 => tunnel.decapsulate(None, &src, dst),
                                 _ => unreachable!(),
+                            } {
+                                TunnResult::Done => (),
+                                TunnResult::Err(_) => (),
+                                TunnResult::WriteToNetwork(packet) => {
+                                    sq.push_multiple(&prep_write(
+                                        1,
+                                        buffers,
+                                        buf.unwrap(),
+                                        packet.len() as u32,
+                                    ))
+                                    .unwrap();
+                                    // FIXME: should flush, but would complicate buffer mgmt
+                                }
+                                TunnResult::WriteToTunnel(packet) => {
+                                    sq.push_multiple(&prep_write(
+                                        0,
+                                        buffers,
+                                        buf.unwrap(),
+                                        packet.len() as u32,
+                                    ))
+                                    .unwrap();
+                                }
                             }
                         } else if let Some(buf) = buf {
                             sq.push(&prep_buffer(buffers, buf)).unwrap();
