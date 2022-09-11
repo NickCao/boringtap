@@ -129,7 +129,7 @@ pub fn open_tap(name: &str) -> std::io::Result<RawFd> {
 
 pub fn timerfd(interval: Duration) -> std::io::Result<RawFd> {
     unsafe {
-        let fd = timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_NONBLOCK);
+        let fd = timerfd_create(libc::CLOCK_BOOTTIME, libc::TFD_NONBLOCK);
         if fd < 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
