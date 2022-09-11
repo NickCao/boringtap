@@ -2,7 +2,7 @@ use argh::FromArgs;
 use io_uring::cqueue::buffer_select;
 use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
-use libc::malloc;
+use libc::{c_void, malloc};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::net::SocketAddr;
@@ -31,6 +31,18 @@ fn prep_read(fd: u32) -> squeue::Entry {
         .build()
         .flags(Flags::BUFFER_SELECT)
         .user_data(fd.into())
+}
+
+fn prep_buffer(buffers: *mut c_void, bid: u16) -> squeue::Entry {
+    opcode::ProvideBuffers::new(
+        unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
+        BUF_SIZE as _,
+        1,
+        0,
+        bid,
+    )
+    .build()
+    .user_data(3)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -97,17 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .unwrap();
                                 } else if let Some(buf) = buffer_select(cqe.flags()) {
                                     ring.submission_shared()
-                                        .push(
-                                            &opcode::ProvideBuffers::new(
-                                                (buffers as usize + buf as usize * BUF_SIZE) as _,
-                                                BUF_SIZE as _,
-                                                1,
-                                                0,
-                                                buf as _,
-                                            )
-                                            .build()
-                                            .user_data(3),
-                                        )
+                                        .push(&prep_buffer(buffers, buf))
                                         .unwrap();
                                 }
                                 ring.submission_shared()
@@ -117,19 +119,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             3 => {}
                             _ => {
-                                let buf = (data >> 32) as usize;
+                                let buf = (data >> 32) as u16;
                                 ring.submission_shared()
-                                    .push(
-                                        &opcode::ProvideBuffers::new(
-                                            (buffers as usize + buf * BUF_SIZE) as _,
-                                            BUF_SIZE as _,
-                                            1,
-                                            0,
-                                            buf as _,
-                                        )
-                                        .build()
-                                        .user_data(3),
-                                    )
+                                    .push(&prep_buffer(buffers, buf))
                                     .unwrap();
                                 ring.submit().unwrap();
                             }
