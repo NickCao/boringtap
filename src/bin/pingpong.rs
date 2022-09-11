@@ -98,9 +98,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 loop {
                     drop(poll.poll(&mut events, None));
+                    let mut sq = ring.submission_shared();
                     for cqe in ring.completion_shared() {
                         let data = cqe.user_data();
-                        let mut sq = ring.submission_shared();
                         match data {
                             0 | 1 => {
                                 let buf = buffer_select(cqe.flags());
@@ -124,6 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    sq.sync();
                     ring.submit().unwrap();
                 }
             }
