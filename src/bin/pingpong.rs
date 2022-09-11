@@ -123,8 +123,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 sq.push(&prep_buffer(buffers, buf)).unwrap();
                             }
                         }
-                        ring.submit().unwrap();
                     }
+                    ring.submit().unwrap();
                 }
             }
         });
