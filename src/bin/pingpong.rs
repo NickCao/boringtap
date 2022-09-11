@@ -107,22 +107,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .user_data((((buf as u64) << 32) + 2) as u64),
                                         )
                                         .unwrap();
-                                } else if cqe.result() != -libc::ENOBUFS {
-                                    let buf = buffer_select(cqe.flags()).unwrap() as usize;
-                                    ring.submission_shared()
-                                        .push(
-                                            &opcode::ProvideBuffers::new(
-                                                (buffers as usize + buf * BUF_SIZE) as _,
-                                                BUF_SIZE as _,
-                                                1,
-                                                0,
-                                                buf as _,
-                                            )
-                                            .build()
-                                            .user_data(3),
-                                        )
-                                        .unwrap();
                                 } else {
+                                    if let Some(buf) = buffer_select(cqe.flags()) {
+                                        ring.submission_shared()
+                                            .push(
+                                                &opcode::ProvideBuffers::new(
+                                                    (buffers as usize + buf as usize * BUF_SIZE)
+                                                        as _,
+                                                    BUF_SIZE as _,
+                                                    1,
+                                                    0,
+                                                    buf as _,
+                                                )
+                                                .build()
+                                                .user_data(3),
+                                            )
+                                            .unwrap();
+                                    }
                                 }
                                 ring.submission_shared()
                                     .push(
