@@ -50,7 +50,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut ring = IoUring::builder().build(128).unwrap();
             let submitter = ring.submitter();
-
             submitter.register_files(&fds).unwrap();
             submitter.register_eventfd(eventfd).unwrap();
 
@@ -59,15 +58,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 ring.submission()
                     .push(
-                        &opcode::ProvideBuffers::new(
-                            buffers as _,
-                            128 * BUF_SIZE as i32,
-                            128,
-                            0,
-                            0,
-                        )
-                        .build()
-                        .user_data(3),
+                        &opcode::ProvideBuffers::new(buffers as _, BUF_SIZE as _, 128, 0, 0)
+                            .build()
+                            .user_data(3),
                     )
                     .unwrap();
 
@@ -129,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .user_data(3),
                                         )
                                         .unwrap();
+                                } else {
                                 }
                                 ring.submission_shared()
                                     .push(
