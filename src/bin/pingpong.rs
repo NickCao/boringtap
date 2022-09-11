@@ -1,4 +1,5 @@
-use argh::{Flag, FromArgs};
+use argh::FromArgs;
+use etherparse::SlicedPacket;
 use io_uring::cqueue::buffer_select;
 use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
@@ -8,6 +9,7 @@ use mio::{Events, Interest, Poll, Token};
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;
+use std::slice::from_raw_parts_mut;
 
 const BUF_SIZE: usize = 65535;
 
@@ -109,6 +111,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             0 | 1 => {
                                 let buf = buffer_select(cqe.flags());
                                 if cqe.result() > 0 {
+                                    let packet = from_raw_parts_mut(
+                                        (buffers as *mut u8)
+                                            .offset((buf.unwrap() as usize * BUF_SIZE) as isize),
+                                        cqe.result() as usize,
+                                    );
+                                    let _ = SlicedPacket::from_ethernet(packet).unwrap();
                                     sq.push_multiple(&prep_write(
                                         (1 - data) as u32,
                                         buffers,
