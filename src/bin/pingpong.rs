@@ -5,8 +5,8 @@ use io_uring::cqueue::buffer_select;
 use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{c_void, malloc};
-use mio::unix::SourceFd;
-use mio::{Events, Interest, Poll, Token};
+
+
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;
@@ -86,22 +86,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..4 {
         let tunnel = tunnel.clone();
         std::thread::spawn(move || {
-            let eventfd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-
-            let mut poll = Poll::new().unwrap();
-            poll.registry()
-                .register(&mut SourceFd(&eventfd), Token(0), Interest::READABLE)
-                .unwrap();
-            let mut events = Events::with_capacity(1024);
-
             let mut ring = IoUring::builder().setup_cqsize(128).build(128).unwrap();
+
             let submitter = ring.submitter();
             submitter.register_files(&fds).unwrap();
-            submitter.register_eventfd(eventfd).unwrap();
-
-            let buffers = unsafe { malloc(128 * BUF_SIZE) };
 
             unsafe {
+                let buffers = malloc(128 * BUF_SIZE);
                 ring.submission()
                     .push(
                         &opcode::ProvideBuffers::new(buffers as _, BUF_SIZE as _, 128, 0, 0)
@@ -117,7 +108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ring.submit().unwrap();
 
                 loop {
-                    drop(poll.poll(&mut events, None));
                     let mut sq = ring.submission_shared();
                     for cqe in ring.completion_shared() {
                         let data = cqe.user_data();
@@ -135,8 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         PKT_SIZE,
                                     );
                                     match match data {
-                                        0 => tunnel.lock().unwrap().encapsulate(&src, dst),
-                                        1 => tunnel.lock().unwrap().decapsulate(None, &src, dst),
+                                        0 => tunnel.lock().unwrap().encapsulate(src, dst),
+                                        1 => tunnel.lock().unwrap().decapsulate(None, src, dst),
                                         _ => unreachable!(),
                                     } {
                                         TunnResult::Done => (),
@@ -169,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     sq.sync();
-                    ring.submit().unwrap();
+                    ring.submit_and_wait(1).unwrap();
                 }
             }
         });
