@@ -33,6 +33,16 @@ fn prep_read(fd: u32) -> squeue::Entry {
         .user_data(fd.into())
 }
 
+fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> squeue::Entry {
+    opcode::Write::new(
+        types::Fixed(fd),
+        unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
+        n,
+    )
+    .build()
+    .user_data((((bid as u64) << 32) + 2) as u64)
+}
+
 fn prep_buffer(buffers: *mut c_void, bid: u16) -> squeue::Entry {
     opcode::ProvideBuffers::new(
         unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
@@ -97,15 +107,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if cqe.result() > 0 {
                                     let buf = buffer_select(cqe.flags()).unwrap() as usize;
                                     ring.submission_shared()
-                                        .push(
-                                            &opcode::Write::new(
-                                                types::Fixed(write_to as u32),
-                                                (buffers as usize + buf * BUF_SIZE) as _,
-                                                cqe.result() as u32,
-                                            )
-                                            .build()
-                                            .user_data((((buf as u64) << 32) + 2) as u64),
-                                        )
+                                        .push(&prep_write(
+                                            write_to as u32,
+                                            buffers,
+                                            buf as u16,
+                                            cqe.result() as u32,
+                                        ))
                                         .unwrap();
                                 } else if let Some(buf) = buffer_select(cqe.flags()) {
                                     ring.submission_shared()
