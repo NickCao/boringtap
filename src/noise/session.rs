@@ -266,12 +266,6 @@ impl Session {
         self.receiving_counter_mark(packet.counter)?;
         Ok(ret)
     }
-
-    /// Returns the estimated downstream packet loss for this session
-    pub(super) fn current_packet_cnt(&self) -> (u64, u64) {
-        let counter_validator = self.receiving_key_counter.lock();
-        (counter_validator.next, counter_validator.receive_cnt)
-    }
 }
 
 #[cfg(test)]

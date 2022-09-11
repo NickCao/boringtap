@@ -7,7 +7,6 @@ use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{c_void, malloc};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;

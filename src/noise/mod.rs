@@ -13,13 +13,9 @@ use crate::noise::handshake::Handshake;
 use crate::noise::rate_limiter::RateLimiter;
 use crate::noise::timers::{TimerName, Timers};
 
-use std::collections::VecDeque;
-use std::convert::{TryFrom, TryInto};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
-const MAX_QUEUE_DEPTH: usize = 256;
 /// number of sessions in the ring, better keep a PoT
 const N_SESSIONS: usize = 8;
 
@@ -47,8 +43,6 @@ pub struct Tunn {
     current: usize,
     /// Keeps tabs on the expiring timers
     timers: timers::Timers,
-    tx_bytes: usize,
-    rx_bytes: usize,
     rate_limiter: Arc<RateLimiter>,
 }
 
@@ -167,8 +161,6 @@ impl Tunn {
             .map_err(|_| "Invalid parameters")?,
             sessions: Default::default(),
             current: Default::default(),
-            tx_bytes: Default::default(),
-            rx_bytes: Default::default(),
 
             timers: Timers::new(persistent_keepalive, false),
 
@@ -210,7 +202,6 @@ impl Tunn {
             if !src.is_empty() {
                 self.timer_tick(TimerName::TimeLastDataPacketSent);
             }
-            self.tx_bytes += src.len();
             return TunnResult::WriteToNetwork(packet);
         }
 
@@ -410,7 +401,6 @@ impl Tunn {
     /// Returns the truncated packet and the source IP as TunnResult
     fn validate_decapsulated_packet<'a>(&mut self, packet: &'a mut [u8]) -> TunnResult<'a> {
         self.timer_tick(TimerName::TimeLastDataPacketReceived);
-        self.rx_bytes += packet.len();
         match packet.len() {
             0 => TunnResult::Done, // This is keepalive, and not an error
             _ => TunnResult::WriteToTunnel(packet),
