@@ -28,7 +28,7 @@ rtnetlink = "*"
 netlink-packet-generic = "*"
 netlink-packet-core = "*"
 futures = "0.3.24"
-io-uring = "0.5"
+io-uring = { version = "0.5", features = ["unstable"] }
 mio = "0.8"
 
 [profile.release]

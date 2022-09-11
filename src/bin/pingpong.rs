@@ -1,3 +1,4 @@
+use io_uring::cqueue::buffer_select;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::fs::File;
@@ -67,69 +68,115 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             submitter.register_buffers(&iov).unwrap();
             submitter.register_eventfd(eventfd).unwrap();
 
+            let buffers = unsafe { malloc(128 * BUF_SIZE) };
+
             unsafe {
                 ring.submission()
                     .push(
-                        &opcode::ReadFixed::new(
-                            types::Fixed(0),
-                            iov[0].iov_base as _,
-                            iov[0].iov_len as _,
+                        &opcode::ProvideBuffers::new(
+                            buffers as _,
+                            128 * BUF_SIZE as i32,
+                            128,
+                            0,
                             0,
                         )
                         .build()
-                        .user_data(0),
+                        .user_data(3),
                     )
                     .unwrap();
+
                 ring.submission()
                     .push(
-                        &opcode::ReadFixed::new(
-                            types::Fixed(1),
-                            iov[1].iov_base as _,
-                            iov[1].iov_len as _,
-                            1,
-                        )
-                        .build()
-                        .user_data(1),
+                        &opcode::Read::new(types::Fixed(0), std::ptr::null_mut(), BUF_SIZE as _)
+                            .buf_group(0)
+                            .build()
+                            .flags(Flags::BUFFER_SELECT)
+                            .user_data(0),
                     )
                     .unwrap();
+
+                ring.submission()
+                    .push(
+                        &opcode::Read::new(types::Fixed(1), std::ptr::null_mut(), BUF_SIZE as _)
+                            .buf_group(0)
+                            .build()
+                            .flags(Flags::BUFFER_SELECT)
+                            .user_data(1),
+                    )
+                    .unwrap();
+
                 ring.submit().unwrap();
 
                 loop {
                     drop(poll.poll(&mut events, None));
                     for cqe in ring.completion_shared().into_iter() {
                         let data = cqe.user_data();
-                        if data != u64::MAX {
-                            let read_from = data as usize;
-                            let write_to = 1 - read_from;
-                            if cqe.result() > 0 {
+                        match data {
+                            0 | 1 => {
+                                let read_from = data as usize;
+                                let write_to = 1 - read_from;
+                                if cqe.result() > 0 {
+                                    let buf = buffer_select(cqe.flags()).unwrap() as usize;
+                                    ring.submission_shared()
+                                        .push(
+                                            &opcode::Write::new(
+                                                types::Fixed(write_to as u32),
+                                                (buffers as usize + buf * BUF_SIZE) as _,
+                                                cqe.result() as u32,
+                                            )
+                                            .build()
+                                            .user_data((((buf as u64) << 32) + 2) as u64),
+                                        )
+                                        .unwrap();
+                                } else if cqe.result() != -libc::ENOBUFS {
+                                    let buf = buffer_select(cqe.flags()).unwrap() as usize;
+                                    ring.submission_shared()
+                                        .push(
+                                            &opcode::ProvideBuffers::new(
+                                                (buffers as usize + buf * BUF_SIZE) as _,
+                                                BUF_SIZE as _,
+                                                1,
+                                                0,
+                                                buf as _,
+                                            )
+                                            .build()
+                                            .user_data(3),
+                                        )
+                                        .unwrap();
+                                }
                                 ring.submission_shared()
                                     .push(
-                                        &opcode::WriteFixed::new(
-                                            types::Fixed(write_to as u32),
-                                            iov[read_from].iov_base as _,
-                                            cqe.result() as u32,
-                                            read_from as u16,
+                                        &opcode::Read::new(
+                                            types::Fixed(read_from as u32),
+                                            std::ptr::null_mut(),
+                                            BUF_SIZE as _,
                                         )
+                                        .buf_group(0)
                                         .build()
-                                        .flags(Flags::IO_LINK)
-                                        .user_data(u64::MAX),
+                                        .flags(Flags::BUFFER_SELECT)
+                                        .user_data(read_from as u64),
                                     )
                                     .unwrap();
+                                ring.submit().unwrap();
                             }
-                            ring.submission_shared()
-                                .push(
-                                    &opcode::ReadFixed::new(
-                                        types::Fixed(read_from as u32),
-                                        iov[read_from].iov_base as _,
-                                        iov[read_from].iov_len as _,
-                                        read_from as u16,
+                            3 => {}
+                            _ => {
+                                let buf = (data >> 32) as usize;
+                                ring.submission_shared()
+                                    .push(
+                                        &opcode::ProvideBuffers::new(
+                                            (buffers as usize + buf * BUF_SIZE) as _,
+                                            BUF_SIZE as _,
+                                            1,
+                                            0,
+                                            buf as _,
+                                        )
+                                        .build()
+                                        .user_data(3),
                                     )
-                                    .build()
-                                    .user_data(read_from as u64),
-                                )
-                                .unwrap();
-                            ring.submit().unwrap();
-                        } else {
+                                    .unwrap();
+                                ring.submit().unwrap();
+                            }
                         }
                     }
                 }
