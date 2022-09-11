@@ -48,24 +48,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap();
             let mut events = Events::with_capacity(1024);
 
-            let iov = unsafe {
-                [
-                    iovec {
-                        iov_base: malloc(BUF_SIZE),
-                        iov_len: BUF_SIZE,
-                    },
-                    iovec {
-                        iov_base: malloc(BUF_SIZE),
-                        iov_len: BUF_SIZE,
-                    },
-                ]
-            };
-
             let mut ring = IoUring::builder().build(128).unwrap();
             let submitter = ring.submitter();
 
             submitter.register_files(&fds).unwrap();
-            submitter.register_buffers(&iov).unwrap();
             submitter.register_eventfd(eventfd).unwrap();
 
             let buffers = unsafe { malloc(128 * BUF_SIZE) };
