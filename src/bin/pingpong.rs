@@ -11,7 +11,8 @@ use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;
 use std::slice::from_raw_parts_mut;
 
-const BUF_SIZE: usize = 65535;
+const PKT_SIZE: usize = 65535;
+const BUF_SIZE: usize = PKT_SIZE * 2;
 
 #[derive(FromArgs)]
 /// pingpong
@@ -28,7 +29,7 @@ struct Args {
 }
 
 fn prep_read(fd: u32) -> squeue::Entry {
-    opcode::Read::new(types::Fixed(fd), std::ptr::null_mut(), BUF_SIZE as _)
+    opcode::Read::new(types::Fixed(fd), std::ptr::null_mut(), PKT_SIZE as _)
         .buf_group(0)
         .build()
         .flags(Flags::BUFFER_SELECT)
@@ -39,7 +40,7 @@ fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> [squeue::Entry
     [
         opcode::Write::new(
             types::Fixed(fd),
-            unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
+            unsafe { (buffers as *mut u8).offset(((bid as usize * BUF_SIZE) + PKT_SIZE) as isize) },
             n,
         )
         .build()
@@ -116,7 +117,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .offset((buf.unwrap() as usize * BUF_SIZE) as isize),
                                         cqe.result() as usize,
                                     );
+                                    let dst = from_raw_parts_mut(
+                                        (buffers as *mut u8).offset(
+                                            ((buf.unwrap() as usize * BUF_SIZE) + PKT_SIZE)
+                                                as isize,
+                                        ),
+                                        PKT_SIZE,
+                                    );
                                     let _ = SlicedPacket::from_ethernet(packet).unwrap();
+                                    dst[..cqe.result() as usize].copy_from_slice(&packet);
                                     sq.push_multiple(&prep_write(
                                         (1 - data) as u32,
                                         buffers,
