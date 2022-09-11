@@ -1,15 +1,12 @@
+use argh::FromArgs;
 use io_uring::cqueue::buffer_select;
+use io_uring::{opcode, squeue::Flags, types, IoUring};
+use libc::malloc;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
-use std::fs::File;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
-use std::os::unix::prelude::{AsRawFd, FromRawFd, RawFd};
-use std::time::Duration;
-
-use argh::FromArgs;
-use io_uring::{opcode, squeue::Flags, types, IoUring};
-use libc::{iovec, malloc};
+use std::os::unix::prelude::AsRawFd;
 
 const BUF_SIZE: usize = 65535;
 
@@ -38,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let fds = [tap.as_raw_fd(), sock.as_raw_fd()];
 
-    for _ in 0..1 {
+    for _ in 0..4 {
         std::thread::spawn(move || {
             let eventfd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
 
@@ -88,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 loop {
                     drop(poll.poll(&mut events, None));
-                    for cqe in ring.completion_shared().into_iter() {
+                    for cqe in ring.completion_shared() {
                         let data = cqe.user_data();
                         match data {
                             0 | 1 => {
@@ -107,23 +104,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .user_data((((buf as u64) << 32) + 2) as u64),
                                         )
                                         .unwrap();
-                                } else {
-                                    if let Some(buf) = buffer_select(cqe.flags()) {
-                                        ring.submission_shared()
-                                            .push(
-                                                &opcode::ProvideBuffers::new(
-                                                    (buffers as usize + buf as usize * BUF_SIZE)
-                                                        as _,
-                                                    BUF_SIZE as _,
-                                                    1,
-                                                    0,
-                                                    buf as _,
-                                                )
-                                                .build()
-                                                .user_data(3),
+                                } else if let Some(buf) = buffer_select(cqe.flags()) {
+                                    ring.submission_shared()
+                                        .push(
+                                            &opcode::ProvideBuffers::new(
+                                                (buffers as usize + buf as usize * BUF_SIZE) as _,
+                                                BUF_SIZE as _,
+                                                1,
+                                                0,
+                                                buf as _,
                                             )
-                                            .unwrap();
-                                    }
+                                            .build()
+                                            .user_data(3),
+                                        )
+                                        .unwrap();
                                 }
                                 ring.submission_shared()
                                     .push(
