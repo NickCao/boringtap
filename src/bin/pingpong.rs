@@ -102,25 +102,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let data = cqe.user_data();
                         match data {
                             0 | 1 => {
-                                let read_from = data as usize;
-                                let write_to = 1 - read_from;
+                                let buf = buffer_select(cqe.flags());
                                 if cqe.result() > 0 {
-                                    let buf = buffer_select(cqe.flags()).unwrap() as usize;
                                     ring.submission_shared()
                                         .push(&prep_write(
-                                            write_to as u32,
+                                            (1 - data) as u32,
                                             buffers,
-                                            buf as u16,
+                                            buf.unwrap(),
                                             cqe.result() as u32,
                                         ))
                                         .unwrap();
-                                } else if let Some(buf) = buffer_select(cqe.flags()) {
+                                } else if let Some(buf) = buf {
                                     ring.submission_shared()
                                         .push(&prep_buffer(buffers, buf))
                                         .unwrap();
                                 }
                                 ring.submission_shared()
-                                    .push(&prep_read(read_from as u32))
+                                    .push(&prep_read(data as u32))
                                     .unwrap();
                                 ring.submit().unwrap();
                             }
