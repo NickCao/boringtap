@@ -1,11 +1,11 @@
 use argh::FromArgs;
-use etherparse::SlicedPacket;
 use io_uring::cqueue::buffer_select;
 use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{c_void, malloc};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;
@@ -40,7 +40,7 @@ fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> [squeue::Entry
     [
         opcode::Write::new(
             types::Fixed(fd),
-            unsafe { (buffers as *mut u8).offset(((bid as usize * BUF_SIZE) + PKT_SIZE) as isize) },
+            unsafe { (buffers as *mut u8).add((bid as usize * BUF_SIZE) + PKT_SIZE) },
             n,
         )
         .build()
@@ -52,7 +52,7 @@ fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> [squeue::Entry
 
 fn prep_buffer(buffers: *mut c_void, bid: u16) -> squeue::Entry {
     opcode::ProvideBuffers::new(
-        unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
+        unsafe { (buffers as *mut u8).add(bid as usize * BUF_SIZE) },
         BUF_SIZE as _,
         1,
         0,
@@ -75,6 +75,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for _ in 0..4 {
         std::thread::spawn(move || {
+            let psk = UnboundKey::new(&CHACHA20_POLY1305, &[1u8; 32]).unwrap();
+            let key = LessSafeKey::new(psk);
+
             let eventfd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
 
             let mut poll = Poll::new().unwrap();
@@ -113,24 +116,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let buf = buffer_select(cqe.flags());
                                 if cqe.result() > 0 {
                                     let packet = from_raw_parts_mut(
-                                        (buffers as *mut u8)
-                                            .offset((buf.unwrap() as usize * BUF_SIZE) as isize),
+                                        (buffers as *mut u8).add(buf.unwrap() as usize * BUF_SIZE),
                                         cqe.result() as usize,
                                     );
                                     let dst = from_raw_parts_mut(
-                                        (buffers as *mut u8).offset(
-                                            ((buf.unwrap() as usize * BUF_SIZE) + PKT_SIZE)
-                                                as isize,
-                                        ),
+                                        (buffers as *mut u8)
+                                            .add((buf.unwrap() as usize * BUF_SIZE) + PKT_SIZE),
                                         PKT_SIZE,
                                     );
-                                    let _ = SlicedPacket::from_ethernet(packet).unwrap();
-                                    dst[..cqe.result() as usize].copy_from_slice(&packet);
+                                    let len = match data {
+                                        0 => {
+                                            let tag = key
+                                                .seal_in_place_separate_tag(
+                                                    Nonce::assume_unique_for_key([0u8; 12]),
+                                                    Aad::empty(),
+                                                    packet,
+                                                )
+                                                .unwrap();
+                                            dst[..packet.len()].copy_from_slice(packet);
+                                            dst[packet.len()..packet.len() + tag.as_ref().len()]
+                                                .copy_from_slice(tag.as_ref());
+                                            packet.len() + tag.as_ref().len()
+                                        }
+                                        1 => {
+                                            let plain = key
+                                                .open_in_place(
+                                                    Nonce::assume_unique_for_key([0u8; 12]),
+                                                    Aad::empty(),
+                                                    packet,
+                                                )
+                                                .unwrap();
+                                            dst[..plain.len()].copy_from_slice(plain);
+                                            plain.len()
+                                        }
+                                        _ => unreachable!(),
+                                    };
                                     sq.push_multiple(&prep_write(
                                         (1 - data) as u32,
                                         buffers,
                                         buf.unwrap(),
-                                        cqe.result() as u32,
+                                        len as u32,
                                     ))
                                     .unwrap();
                                 } else if let Some(buf) = buf {
