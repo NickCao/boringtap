@@ -100,37 +100,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     drop(poll.poll(&mut events, None));
                     for cqe in ring.completion_shared() {
                         let data = cqe.user_data();
+                        let mut sq = ring.submission_shared();
                         match data {
                             0 | 1 => {
                                 let buf = buffer_select(cqe.flags());
                                 if cqe.result() > 0 {
-                                    ring.submission_shared()
-                                        .push(&prep_write(
-                                            (1 - data) as u32,
-                                            buffers,
-                                            buf.unwrap(),
-                                            cqe.result() as u32,
-                                        ))
-                                        .unwrap();
-                                } else if let Some(buf) = buf {
-                                    ring.submission_shared()
-                                        .push(&prep_buffer(buffers, buf))
-                                        .unwrap();
-                                }
-                                ring.submission_shared()
-                                    .push(&prep_read(data as u32))
+                                    sq.push(&prep_write(
+                                        (1 - data) as u32,
+                                        buffers,
+                                        buf.unwrap(),
+                                        cqe.result() as u32,
+                                    ))
                                     .unwrap();
-                                ring.submit().unwrap();
+                                } else if let Some(buf) = buf {
+                                    sq.push(&prep_buffer(buffers, buf)).unwrap();
+                                }
+                                sq.push(&prep_read(data as u32)).unwrap();
                             }
                             3 => {}
                             _ => {
                                 let buf = (data >> 32) as u16;
-                                ring.submission_shared()
-                                    .push(&prep_buffer(buffers, buf))
-                                    .unwrap();
-                                ring.submit().unwrap();
+                                sq.push(&prep_buffer(buffers, buf)).unwrap();
                             }
                         }
+                        ring.submit().unwrap();
                     }
                 }
             }
