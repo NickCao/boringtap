@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap();
             let mut events = Events::with_capacity(1024);
 
-            let mut ring = IoUring::builder().setup_sqpoll(2000).build(128).unwrap();
+            let mut ring = IoUring::builder().setup_cqsize(128).build(128).unwrap();
             let submitter = ring.submitter();
             submitter.register_files(&fds).unwrap();
             submitter.register_eventfd(eventfd).unwrap();
@@ -110,8 +110,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .unwrap();
 
-                ring.submission().push(&prep_read(0)).unwrap();
-                ring.submission().push(&prep_read(1)).unwrap();
+                for _ in 0..16 {
+                    ring.submission().push(&prep_read(0)).unwrap();
+                    ring.submission().push(&prep_read(1)).unwrap();
+                }
                 ring.submit().unwrap();
 
                 loop {
