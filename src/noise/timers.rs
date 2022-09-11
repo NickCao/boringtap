@@ -138,8 +138,6 @@ impl Tunn {
             *session = None;
         }
 
-        self.packet_queue.clear();
-
         self.timers.clear();
     }
 

@@ -45,8 +45,6 @@ pub struct Tunn {
     sessions: [Option<session::Session>; N_SESSIONS],
     /// Index of most recently used session
     current: usize,
-    /// Queue to store blocked packets
-    packet_queue: VecDeque<Vec<u8>>,
     /// Keeps tabs on the expiring timers
     timers: timers::Timers,
     tx_bytes: usize,
@@ -172,7 +170,6 @@ impl Tunn {
             tx_bytes: Default::default(),
             rx_bytes: Default::default(),
 
-            packet_queue: VecDeque::new(),
             timers: Timers::new(persistent_keepalive, false),
 
             rate_limiter,
@@ -217,8 +214,7 @@ impl Tunn {
             return TunnResult::WriteToNetwork(packet);
         }
 
-        // If there is no session, queue the packet for future retry
-        self.queue_packet(src);
+        // If there is no session, drop the packet
         // Initiate a new handshake if none is in progress
         self.format_handshake_initiation(dst, false)
     }
@@ -235,11 +231,6 @@ impl Tunn {
         datagram: &[u8],
         dst: &'a mut [u8],
     ) -> TunnResult<'a> {
-        if datagram.is_empty() {
-            // Indicates a repeated call
-            return self.send_queued_packet(dst);
-        }
-
         let mut cookie = [0u8; COOKIE_REPLY_SZ];
         let packet = match self
             .rate_limiter
@@ -424,83 +415,5 @@ impl Tunn {
             0 => TunnResult::Done, // This is keepalive, and not an error
             _ => TunnResult::WriteToTunnel(packet),
         }
-    }
-
-    /// Get a packet from the queue, and try to encapsulate it
-    fn send_queued_packet<'a>(&mut self, dst: &'a mut [u8]) -> TunnResult<'a> {
-        if let Some(packet) = self.dequeue_packet() {
-            match self.encapsulate(&packet, dst) {
-                TunnResult::Err(_) => {
-                    // On error, return packet to the queue
-                    self.requeue_packet(packet);
-                }
-                r => return r,
-            }
-        }
-        TunnResult::Done
-    }
-
-    /// Push packet to the back of the queue
-    fn queue_packet(&mut self, packet: &[u8]) {
-        if self.packet_queue.len() < MAX_QUEUE_DEPTH {
-            // Drop if too many are already in queue
-            self.packet_queue.push_back(packet.to_vec());
-        }
-    }
-
-    /// Push packet to the front of the queue
-    fn requeue_packet(&mut self, packet: Vec<u8>) {
-        if self.packet_queue.len() < MAX_QUEUE_DEPTH {
-            // Drop if too many are already in queue
-            self.packet_queue.push_front(packet);
-        }
-    }
-
-    fn dequeue_packet(&mut self) -> Option<Vec<u8>> {
-        self.packet_queue.pop_front()
-    }
-
-    fn estimate_loss(&self) -> f32 {
-        let session_idx = self.current;
-
-        let mut weight = 9.0;
-        let mut cur_avg = 0.0;
-        let mut total_weight = 0.0;
-
-        for i in 0..N_SESSIONS {
-            if let Some(ref session) = self.sessions[(session_idx.wrapping_sub(i)) % N_SESSIONS] {
-                let (expected, received) = session.current_packet_cnt();
-
-                let loss = if expected == 0 {
-                    0.0
-                } else {
-                    1.0 - received as f32 / expected as f32
-                };
-
-                cur_avg += loss * weight;
-                total_weight += weight;
-                weight /= 3.0;
-            }
-        }
-
-        if total_weight == 0.0 {
-            0.0
-        } else {
-            cur_avg / total_weight
-        }
-    }
-
-    /// Return stats from the tunnel:
-    /// * Time since last handshake in seconds
-    /// * Data bytes sent
-    /// * Data bytes received
-    pub fn stats(&self) -> (Option<Duration>, usize, usize, f32, Option<u32>) {
-        let time = self.time_since_last_handshake();
-        let tx_bytes = self.tx_bytes;
-        let rx_bytes = self.rx_bytes;
-        let loss = self.estimate_loss();
-        let rtt = self.handshake.last_rtt;
-
-        (time, tx_bytes, rx_bytes, loss, rtt)
     }
 }
