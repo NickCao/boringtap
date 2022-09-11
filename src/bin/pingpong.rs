@@ -1,5 +1,6 @@
 use argh::FromArgs;
 use io_uring::cqueue::buffer_select;
+use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::malloc;
 use mio::unix::SourceFd;
@@ -22,6 +23,14 @@ struct Args {
     /// peer address
     #[argh(option, short = 'p')]
     peer: SocketAddr,
+}
+
+fn prep_read(fd: u32) -> squeue::Entry {
+    opcode::Read::new(types::Fixed(fd), std::ptr::null_mut(), BUF_SIZE as _)
+        .buf_group(0)
+        .build()
+        .flags(Flags::BUFFER_SELECT)
+        .user_data(fd.into())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -61,26 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .unwrap();
 
-                ring.submission()
-                    .push(
-                        &opcode::Read::new(types::Fixed(0), std::ptr::null_mut(), BUF_SIZE as _)
-                            .buf_group(0)
-                            .build()
-                            .flags(Flags::BUFFER_SELECT)
-                            .user_data(0),
-                    )
-                    .unwrap();
-
-                ring.submission()
-                    .push(
-                        &opcode::Read::new(types::Fixed(1), std::ptr::null_mut(), BUF_SIZE as _)
-                            .buf_group(0)
-                            .build()
-                            .flags(Flags::BUFFER_SELECT)
-                            .user_data(1),
-                    )
-                    .unwrap();
-
+                ring.submission().push(&prep_read(0)).unwrap();
+                ring.submission().push(&prep_read(1)).unwrap();
                 ring.submit().unwrap();
 
                 loop {
@@ -120,17 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .unwrap();
                                 }
                                 ring.submission_shared()
-                                    .push(
-                                        &opcode::Read::new(
-                                            types::Fixed(read_from as u32),
-                                            std::ptr::null_mut(),
-                                            BUF_SIZE as _,
-                                        )
-                                        .buf_group(0)
-                                        .build()
-                                        .flags(Flags::BUFFER_SELECT)
-                                        .user_data(read_from as u64),
-                                    )
+                                    .push(&prep_read(read_from as u32))
                                     .unwrap();
                                 ring.submit().unwrap();
                             }
