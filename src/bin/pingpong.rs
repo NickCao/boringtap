@@ -6,7 +6,6 @@ use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{c_void, malloc};
 
-
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;
@@ -83,9 +82,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Tunn::new(sk, pk, None, None, 0, limiter).unwrap(),
     )); // FIXME: use peer pk
 
+    let mut threads = vec![];
     for _ in 0..4 {
         let tunnel = tunnel.clone();
-        std::thread::spawn(move || {
+        threads.push(std::thread::spawn(move || {
             let mut ring = IoUring::builder().setup_cqsize(128).build(128).unwrap();
 
             let submitter = ring.submitter();
@@ -162,7 +162,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ring.submit_and_wait(1).unwrap();
                 }
             }
-        });
+        }));
     }
-    loop {}
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    Ok(())
 }
