@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..4 {
         let tunnel = tunnel.clone();
         threads.push(std::thread::spawn(move || {
-            let mut ring = IoUring::builder().setup_cqsize(128).build(128).unwrap();
+            let mut ring = IoUring::builder().build(256).unwrap();
 
             let submitter = ring.submitter();
             submitter.register_files(&fds).unwrap();
