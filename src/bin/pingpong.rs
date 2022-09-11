@@ -1,4 +1,4 @@
-use argh::FromArgs;
+use argh::{Flag, FromArgs};
 use io_uring::cqueue::buffer_select;
 use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
@@ -33,14 +33,18 @@ fn prep_read(fd: u32) -> squeue::Entry {
         .user_data(fd.into())
 }
 
-fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> squeue::Entry {
-    opcode::Write::new(
-        types::Fixed(fd),
-        unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
-        n,
-    )
-    .build()
-    .user_data((((bid as u64) << 32) + 2) as u64)
+fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> [squeue::Entry; 2] {
+    [
+        opcode::Write::new(
+            types::Fixed(fd),
+            unsafe { (buffers as *mut u8).offset((bid as usize * BUF_SIZE) as isize) },
+            n,
+        )
+        .build()
+        .flags(Flags::IO_HARDLINK)
+        .user_data(u64::MAX),
+        prep_buffer(buffers, bid),
+    ]
 }
 
 fn prep_buffer(buffers: *mut c_void, bid: u16) -> squeue::Entry {
@@ -105,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             0 | 1 => {
                                 let buf = buffer_select(cqe.flags());
                                 if cqe.result() > 0 {
-                                    sq.push(&prep_write(
+                                    sq.push_multiple(&prep_write(
                                         (1 - data) as u32,
                                         buffers,
                                         buf.unwrap(),
@@ -117,11 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 sq.push(&prep_read(data as u32)).unwrap();
                             }
-                            3 => {}
-                            _ => {
-                                let buf = (data >> 32) as u16;
-                                sq.push(&prep_buffer(buffers, buf)).unwrap();
-                            }
+                            _ => {}
                         }
                     }
                     sq.sync();
