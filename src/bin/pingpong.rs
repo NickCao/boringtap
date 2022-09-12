@@ -6,11 +6,12 @@ use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{c_void, malloc};
 
+use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::os::unix::prelude::AsRawFd;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 const PKT_SIZE: usize = 65535;
@@ -123,8 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         PKT_SIZE,
                                     );
                                     match match data {
-                                        0 => tunnel.lock().unwrap().encapsulate(src, dst),
-                                        1 => tunnel.lock().unwrap().decapsulate(None, src, dst),
+                                        0 => tunnel.lock().encapsulate(src, dst),
+                                        1 => tunnel.lock().decapsulate(None, src, dst),
                                         _ => unreachable!(),
                                     } {
                                         TunnResult::Done => (),
