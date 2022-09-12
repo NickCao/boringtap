@@ -1,11 +1,11 @@
 use argh::FromArgs;
 use boringtap::noise::rate_limiter::RateLimiter;
 use boringtap::noise::{Tunn, TunnResult};
+use futures::TryStreamExt;
 use io_uring::cqueue::buffer_select;
 use io_uring::squeue;
 use io_uring::{opcode, squeue::Flags, types, IoUring};
 use libc::{c_void, malloc};
-
 use parking_lot::Mutex;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
@@ -70,6 +70,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tap = boringtap::open_tap(&args.name).unwrap();
 
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let (conn, handle, _) = rtnetlink::new_connection().unwrap();
+        tokio::task::spawn(conn);
+        let mut link = handle.link().get().match_name(args.name).execute();
+        if let Some(link) = link.try_next().await.unwrap() {
+            handle
+                .link()
+                .set(link.header.index)
+                .mtu(1400)
+                .up()
+                .execute()
+                .await
+                .unwrap();
+        }
+    });
+
     let sock = UdpSocket::bind(args.bind).unwrap();
     sock.connect(args.peer).unwrap();
     sock.set_nonblocking(true).unwrap();
@@ -106,8 +126,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ring.submission().push(&prep_read(1)).unwrap();
                 ring.submit().unwrap();
 
+                let mut sq = ring.submission_shared();
                 loop {
-                    let mut sq = ring.submission_shared();
+                    sq.sync();
                     for cqe in ring.completion_shared() {
                         let data = cqe.user_data();
                         match data {
