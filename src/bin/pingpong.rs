@@ -69,32 +69,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Args = argh::from_env();
 
     let tap = boringtap::open_tap(&args.name).unwrap();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .build()
-        .unwrap();
-    rt.block_on(async move {
-        let (conn, handle, _) = rtnetlink::new_connection().unwrap();
-        tokio::task::spawn(conn);
-        let mut link = handle.link().get().match_name(args.name).execute();
-        if let Some(link) = link.try_next().await.unwrap() {
-            handle
-                .link()
-                .set(link.header.index)
-                .mtu(1400)
-                .up()
-                .execute()
-                .await
-                .unwrap();
-        }
-    });
-
     let sock = UdpSocket::bind(args.bind).unwrap();
     sock.connect(args.peer).unwrap();
     sock.set_nonblocking(true).unwrap();
-
     let fds = [tap.as_raw_fd(), sock.as_raw_fd()];
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            let (conn, handle, _) = rtnetlink::new_connection().unwrap();
+            tokio::task::spawn(conn);
+            let mut link = handle.link().get().match_name(args.name).execute();
+            if let Some(link) = link.try_next().await.unwrap() {
+                handle
+                    .link()
+                    .set(link.header.index)
+                    .mtu(1400)
+                    .up()
+                    .execute()
+                    .await
+                    .unwrap();
+            }
+        });
 
     let sk = StaticSecret::from([1u8; 32]);
     let pk = PublicKey::from(&sk);
@@ -128,7 +126,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let mut sq = ring.submission_shared();
                 loop {
-                    sq.sync();
                     for cqe in ring.completion_shared() {
                         let data = cqe.user_data();
                         match data {
