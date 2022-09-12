@@ -101,10 +101,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .unwrap();
 
-                for _ in 0..16 {
-                    ring.submission().push(&prep_read(0)).unwrap();
-                    ring.submission().push(&prep_read(1)).unwrap();
-                }
+                ring.submission().push(&prep_read(0)).unwrap();
+                ring.submission().push(&prep_read(1)).unwrap();
                 ring.submit().unwrap();
 
                 loop {
