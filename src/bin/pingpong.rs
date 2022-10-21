@@ -53,6 +53,20 @@ fn prep_write(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> [squeue::Entry
     ]
 }
 
+fn prep_send(fd: u32, buffers: *mut c_void, bid: u16, n: u32) -> [squeue::Entry; 2] {
+    [
+        opcode::SendZc::new(
+            types::Fixed(fd),
+            unsafe { (buffers as *mut u8).add((bid as usize * BUF_SIZE) + PKT_SIZE) },
+            n,
+        )
+        .build()
+        .flags(Flags::IO_HARDLINK)
+        .user_data(u64::MAX),
+        prep_buffer(buffers, bid),
+    ]
+}
+
 fn prep_buffer(buffers: *mut c_void, bid: u16) -> squeue::Entry {
     opcode::ProvideBuffers::new(
         unsafe { (buffers as *mut u8).add(bid as usize * BUF_SIZE) },
@@ -149,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         TunnResult::Done => (),
                                         TunnResult::Err(_) => (),
                                         TunnResult::WriteToNetwork(packet) => {
-                                            sq.push_multiple(&prep_write(
+                                            sq.push_multiple(&prep_send(
                                                 1,
                                                 buffers,
                                                 buf.unwrap(),
